@@ -3,7 +3,7 @@ import concurrent.futures
 import json
 import os
 from difflib import unified_diff
-
+import weave
 from datasets import load_dataset
 from tqdm import tqdm
 
@@ -459,11 +459,14 @@ def process_loc(loc, args, swe_bench_data, prev_o):
         )
 
 
-def repair(args):
+def repair(args, benchmark_data=None):
     with open(f"{args.output_folder}/args.json", "w") as f:
         json.dump(vars(args), f, indent=4)
 
-    swe_bench_data = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
+    if benchmark_data is None:
+        swe_bench_data = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
+    else:
+        swe_bench_data = benchmark_data
     locs = load_jsonl(args.loc_file)
     prev_o = load_jsonl(args.output_file) if os.path.exists(args.output_file) else []
 
@@ -475,9 +478,10 @@ def repair(args):
 
     if args.num_threads == 1:
         for loc in tqdm(locs, total=len(locs)):
-            result = process_loc(loc, args, swe_bench_data, prev_o)
-            if result is not None:
-                results.append(result)
+            with weave.attributes({'weave_task_id': loc["instance_id"]}):
+                result = process_loc(loc, args, swe_bench_data, prev_o)
+                if result is not None:
+                    results.append(result)
     else:
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=args.num_threads
@@ -560,103 +564,104 @@ def post_process_repair(args):
     locs = load_jsonl(args.loc_file)
 
     for raw_output in raw_outputs:
-        instance_id = raw_output["instance_id"]
-        log_file = os.path.join(
-            args.output_folder, "localization_logs", f"{instance_id}.log"
-        )
-        logger = setup_logger(log_file)
+        with weave.attributes({'weave_task_id': raw_output["instance_id"]}):
+            instance_id = raw_output["instance_id"]
+            log_file = os.path.join(
+                args.output_folder, "localization_logs", f"{instance_id}.log"
+            )
+            logger = setup_logger(log_file)
 
-        if raw_output["raw_output"] == "":
+            if raw_output["raw_output"] == "":
+                with open(args.output_file, "a") as f:
+                    f.write(
+                        json.dumps(
+                            {
+                                "model_name_or_path": "agentless",
+                                "instance_id": instance_id,
+                                "model_patch": "",
+                            }
+                        )
+                        + "\n"
+                    )
+                continue
+
+            if args.select_id == -1:
+                # Use the last generation
+                assert False, "not implemented for now"
+            else:
+                # Use the indexed generation
+                generation_idx = args.select_id
+                print("got into process repair")
+                try:
+                    raw_output_text = raw_output["all_generations"][0][generation_idx]
+                    original_file_content = raw_output["prev_content"][0][generation_idx]
+                    pred_file = raw_output["file_names"][0][generation_idx]
+
+                    pred_files = [loc for loc in locs if loc["instance_id"] == instance_id][
+                        0
+                    ]["found_files"][: args.top_n]
+
+                    git_diffs = ""
+                    raw_git_diffs = ""
+                    if isinstance(raw_output["raw_output"], str):
+                        # for backward compatibility
+                        raw_output["raw_output"] = [raw_output["raw_output"]]
+
+                    file_contents = {pred_file: original_file_content}
+
+                    file_loc_intervals = dict()
+
+                    loc = [loc for loc in locs if loc["instance_id"] == instance_id][0]
+
+                    for i, tmp_pred_file in enumerate(pred_files):
+                        if tmp_pred_file != pred_file:
+                            continue
+                        if "found_edit_locs" in loc and len(loc["found_edit_locs"]) > i:
+                            line_locs, context_intervals = transfer_arb_locs_to_locs(
+                                loc["found_edit_locs"][i],
+                                None,
+                                loc["found_files"][i],
+                                args.context_window,
+                                args.loc_interval,
+                                args.fine_grain_loc_only,
+                                file_content=file_contents[pred_file]
+                                if pred_file in file_contents
+                                else "",
+                            )
+                        else:
+                            line_locs, context_intervals = [], []  # default values.
+
+                        file_loc_intervals[pred_file] = context_intervals
+                except Exception as e:
+                    logger.info(e)
+                    print(e)
+                    raw_output_text = ""
+
+            if raw_output_text:
+                git_diffs, raw_git_diffs, content = post_process_raw_output(
+                    raw_output_text, file_contents, logger, file_loc_intervals, args
+                )
+            else:
+                git_diffs = ""
+                raw_git_diffs = ""
+                content = ""
+
             with open(args.output_file, "a") as f:
                 f.write(
                     json.dumps(
                         {
                             "model_name_or_path": "agentless",
                             "instance_id": instance_id,
-                            "model_patch": "",
+                            "model_patch": git_diffs.lstrip(),
+                            "raw_model_patch": raw_git_diffs.lstrip(),
+                            "original_file_content": content,
                         }
                     )
                     + "\n"
                 )
-            continue
-
-        if args.select_id == -1:
-            # Use the last generation
-            assert False, "not implemented for now"
-        else:
-            # Use the indexed generation
-            generation_idx = args.select_id
-            print("got into process repair")
-            try:
-                raw_output_text = raw_output["all_generations"][0][generation_idx]
-                original_file_content = raw_output["prev_content"][0][generation_idx]
-                pred_file = raw_output["file_names"][0][generation_idx]
-
-                pred_files = [loc for loc in locs if loc["instance_id"] == instance_id][
-                    0
-                ]["found_files"][: args.top_n]
-
-                git_diffs = ""
-                raw_git_diffs = ""
-                if isinstance(raw_output["raw_output"], str):
-                    # for backward compatibility
-                    raw_output["raw_output"] = [raw_output["raw_output"]]
-
-                file_contents = {pred_file: original_file_content}
-
-                file_loc_intervals = dict()
-
-                loc = [loc for loc in locs if loc["instance_id"] == instance_id][0]
-
-                for i, tmp_pred_file in enumerate(pred_files):
-                    if tmp_pred_file != pred_file:
-                        continue
-                    if "found_edit_locs" in loc and len(loc["found_edit_locs"]) > i:
-                        line_locs, context_intervals = transfer_arb_locs_to_locs(
-                            loc["found_edit_locs"][i],
-                            None,
-                            loc["found_files"][i],
-                            args.context_window,
-                            args.loc_interval,
-                            args.fine_grain_loc_only,
-                            file_content=file_contents[pred_file]
-                            if pred_file in file_contents
-                            else "",
-                        )
-                    else:
-                        line_locs, context_intervals = [], []  # default values.
-
-                    file_loc_intervals[pred_file] = context_intervals
-            except Exception as e:
-                logger.info(e)
-                print(e)
-                raw_output_text = ""
-
-        if raw_output_text:
-            git_diffs, raw_git_diffs, content = post_process_raw_output(
-                raw_output_text, file_contents, logger, file_loc_intervals, args
-            )
-        else:
-            git_diffs = ""
-            raw_git_diffs = ""
-            content = ""
-
-        with open(args.output_file, "a") as f:
-            f.write(
-                json.dumps(
-                    {
-                        "model_name_or_path": "agentless",
-                        "instance_id": instance_id,
-                        "model_patch": git_diffs.lstrip(),
-                        "raw_model_patch": raw_git_diffs.lstrip(),
-                        "original_file_content": content,
-                    }
-                )
-                + "\n"
-            )
 
 
-def main():
+def main(benchmark_data=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--loc_file", type=str, required=True)
     parser.add_argument("--top_n", type=int, default=1)
@@ -731,7 +736,7 @@ def main():
             )
         post_process_repair(args)
     elif args.gen_and_process:
-        repair(args)
+        repair(args, benchmark_data)
         args.raw_output_file = args.output_file
         for i in range(args.max_samples):
             args.output_file = args.raw_output_file.replace(
@@ -740,7 +745,7 @@ def main():
             args.select_id = i
             post_process_repair(args)
     else:
-        repair(args)
+        repair(args, benchmark_data)
 
 
 if __name__ == "__main__":

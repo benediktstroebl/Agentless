@@ -2,6 +2,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import weave
 
 from datasets import load_dataset
 from tqdm import tqdm
@@ -185,8 +186,11 @@ def localize_instance(
         )
 
 
-def localize(args):
-    swe_bench_data = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
+def localize(args, benchmark_data=None):
+    if benchmark_data:
+        swe_bench_data = benchmark_data
+    else:
+        swe_bench_data = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
     start_file_locs = load_jsonl(args.start_file) if args.start_file else None
     existing_instance_ids = (
         load_existing_instance_ids(args.output_file) if args.skip_existing else set()
@@ -194,9 +198,10 @@ def localize(args):
 
     if args.num_threads == 1:
         for bug in swe_bench_data:
-            localize_instance(
-                bug, args, swe_bench_data, start_file_locs, existing_instance_ids
-            )
+            with weave.attributes({'weave_task_id': bug["instance_id"]}):
+                localize_instance(
+                    bug, args, swe_bench_data, start_file_locs, existing_instance_ids
+                )
     else:
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=args.num_threads
@@ -279,7 +284,7 @@ def merge(args):
             f.write(json.dumps(data) + "\n")
 
 
-def main():
+def main(benchmark_data=None):
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--output_folder", type=str, required=True)
@@ -368,8 +373,9 @@ def main():
     if args.merge:
         merge(args)
     else:
-        localize(args)
+        localize(args, benchmark_data=benchmark_data)
 
+    
 
 if __name__ == "__main__":
     main()
