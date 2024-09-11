@@ -46,6 +46,8 @@ def create_chatgpt_config(
                 {"role": "user", "content": message},
             ],
         }
+    
+
     return config
 
 
@@ -58,7 +60,17 @@ def request_chatgpt_engine(config, logger, base_url=None, max_retries=40, timeou
     ret = None
     retries = 0
 
+    model = config.get("model")
+    if "gpt" not in model:
+        if model == "meta-llama/Meta-Llama-3.1-8B-Instruct":
+            base_url = "http://localhost:6789/v1"
+        elif model == "meta-llama/Meta-Llama-3.1-70B-Instruct":
+            base_url = "http://localhost:6778/v1"
+    else:
+        base_url = None
+
     client = openai.OpenAI(base_url=base_url)
+
 
     while ret is None and retries < max_retries:
         try:
@@ -66,6 +78,7 @@ def request_chatgpt_engine(config, logger, base_url=None, max_retries=40, timeou
             logger.info("Creating API request")
 
             ret = client.chat.completions.create(**config)
+
 
         except openai.OpenAIError as e:
             if isinstance(e, openai.BadRequestError):

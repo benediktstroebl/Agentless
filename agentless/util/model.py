@@ -91,7 +91,6 @@ class OpenAIChatDecoder(DecoderBase):
     def is_direct_completion(self) -> bool:
         return False
 
-
 class DeepSeekChatDecoder(DecoderBase):
     def __init__(self, name: str, logger, **kwargs) -> None:
         super().__init__(name, logger, **kwargs)
