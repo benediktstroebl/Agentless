@@ -1,6 +1,6 @@
 import time
 from typing import Dict, Union
-
+import os
 import openai
 import tiktoken
 
@@ -35,17 +35,33 @@ def create_chatgpt_config(
             "n": batch_size,
             "messages": [{"role": "system", "content": system_message}] + message,
         }
+        if "o1" in model:
+            config = {
+            "model": model,
+            # "max_completion_tokens": max_tokens,
+            "n": batch_size,
+            "messages": [system_message + "\n\n" + message],
+        }
     else:
         config = {
             "model": model,
             "max_tokens": max_tokens,
-            "temperature": temperature,
             "n": batch_size,
             "messages": [
                 {"role": "system", "content": system_message},
                 {"role": "user", "content": message},
             ],
         }
+
+        if "o1" in model:
+            config = {
+            "model": model,
+            # "max_completion_tokens": max_tokens,
+            "n": batch_size,
+            "messages": [
+                {"role": "user", "content": system_message + "\n\n" + message},
+            ],
+            }
     
 
     return config
@@ -61,15 +77,28 @@ def request_chatgpt_engine(config, logger, base_url=None, max_retries=40, timeou
     retries = 0
 
     model = config.get("model")
-    if "gpt" not in model:
-        if model == "meta-llama/Meta-Llama-3.1-8B-Instruct":
-            base_url = "http://localhost:6789/v1"
-        elif model == "meta-llama/Meta-Llama-3.1-70B-Instruct":
-            base_url = "http://localhost:6778/v1"
+
+    if model == "meta-llama/Meta-Llama-3.1-8B-Instruct":
+        base_url = "http://localhost:6789/v1"
+    elif model == "meta-llama/Meta-Llama-3.1-70B-Instruct":
+        base_url = "http://localhost:6778/v1"
     else:
         base_url = None
 
     client = openai.OpenAI(base_url=base_url)
+
+    if model == "Meta-Llama-3-1-70B-Instruct-htzs":
+        client = openai.AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            azure_endpoint = "https://api-ai-sandbox.princeton.edu",   
+            api_version="2024-02-01" 
+        )
+    elif model == "Meta-Llama-3-1-8B-Instruct-nwxcg":
+        client = openai.AzureOpenAI(
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            azure_endpoint = "https://api-ai-sandbox.princeton.edu",   
+            api_version="2024-02-01" 
+        )
 
 
     while ret is None and retries < max_retries:
@@ -77,7 +106,21 @@ def request_chatgpt_engine(config, logger, base_url=None, max_retries=40, timeou
             # Attempt to get the completion
             logger.info("Creating API request")
 
-            ret = client.chat.completions.create(**config)
+            if "o1" in model:
+                batch_size = config.get("n", 1)
+                # remove n from config
+                config.pop("n")
+                outputs = []
+                for _ in range(batch_size):
+                    ret = client.chat.completions.create(**config)
+                    outputs.append(ret)
+                
+                # merge choices
+                choices = [output.choices[0] for output in outputs]
+                ret.choices = choices
+            else:
+                ret = client.chat.completions.create(**config)
+            
 
 
         except openai.OpenAIError as e:

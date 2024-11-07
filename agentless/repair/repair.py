@@ -464,7 +464,7 @@ def repair(args, benchmark_data=None):
         json.dump(vars(args), f, indent=4)
 
     if benchmark_data is None:
-        swe_bench_data = load_dataset("princeton-nlp/SWE-bench_Lite", split="test")
+        swe_bench_data = load_dataset("princeton-nlp/SWE-bench_Verified", split="test")
     else:
         swe_bench_data = benchmark_data
     locs = load_jsonl(args.loc_file)
@@ -688,7 +688,7 @@ def main(benchmark_data=None):
         # choices=["gpt-4o-2024-05-13", "deepseek-coder", "gpt-4o-mini-2024-07-18"],
     )
     parser.add_argument(
-        "--backend", type=str, default="openai", choices=["openai", "deepseek"]
+        "--backend", type=str, default="openai", choices=["openai", "deepseek", "anthropic"]
     )
     parser.add_argument("--output_folder", type=str, required=True)
     parser.add_argument(
